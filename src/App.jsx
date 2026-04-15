@@ -1,0 +1,475 @@
+import { useEffect, useMemo, useRef, useState } from "react";
+
+const SpeechRecognition =
+  window.SpeechRecognition || window.webkitSpeechRecognition;
+const BACKEND_API_URL = "/api/ask";
+const WAITING_PHRASES = [
+  "Waiting for your next shot, big dog.",
+  "The range doesn't lie. Let's see it.",
+  "Ready when you are.",
+  "Step up. Let's go.",
+  "Ball's on the tee. What have you got?",
+  "Take your time. The data waits.",
+  "Your swing. Your story. Let's write it.",
+  "One shot at a time. Make it count.",
+  "The best swing of your life could be next.",
+  "No judgement. Just improvement.",
+  "Grip it. Rip it. Tell me everything.",
+  "Every miss is data. Every hit is progress.",
+  "The range is yours. I am listening.",
+  "Breathe. Align. Fire away.",
+  "What is the club? What is the target? Let us go.",
+  "Your caddy is ready. Are you?",
+  "Another shot, another lesson.",
+  "Trust the process. Hit the ball.",
+  "I have got all session. You have got this.",
+  "Less thinking. More swinging. Then tell me.",
+];
+
+const pickNextPhrase = (currentPhrase) => {
+  if (WAITING_PHRASES.length <= 1) {
+    return WAITING_PHRASES[0] || "";
+  }
+
+  const candidates = WAITING_PHRASES.filter((phrase) => phrase !== currentPhrase);
+  return candidates[Math.floor(Math.random() * candidates.length)];
+};
+
+function App() {
+  const recognitionRef = useRef(null);
+  const shouldSubmitRef = useRef(false);
+  const transcriptRef = useRef("");
+  const voicesRef = useRef([]);
+  const selectedVoiceRef = useRef(null);
+
+  const audioContextRef = useRef(null);
+  const analyserRef = useRef(null);
+  const mediaStreamRef = useRef(null);
+  const animationFrameRef = useRef(null);
+  const dataArrayRef = useRef(null);
+
+  const [isListening, setIsListening] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
+  const [micLevel, setMicLevel] = useState(0);
+  const [ringDrift, setRingDrift] = useState({ a: 0, b: 0, c: 0 });
+  const [transcript, setTranscript] = useState("");
+  const [response, setResponse] = useState("");
+  const [error, setError] = useState("");
+  const [waitingPhrase, setWaitingPhrase] = useState(() => pickNextPhrase(""));
+  const [isReplyMode, setIsReplyMode] = useState(false);
+  const [shotThread, setShotThread] = useState([]);
+  const [coachingStyle] = useState("The Caddy");
+
+  const speechSupported = useMemo(() => Boolean(SpeechRecognition), []);
+  const ttsSupported = useMemo(
+    () => typeof window !== "undefined" && "speechSynthesis" in window,
+    [],
+  );
+
+  const clearAudioMeter = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach((track) => track.stop());
+      mediaStreamRef.current = null;
+    }
+
+    if (audioContextRef.current) {
+      void audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+
+    analyserRef.current = null;
+    dataArrayRef.current = null;
+    setMicLevel(0);
+    setRingDrift({ a: 0, b: 0, c: 0 });
+  };
+
+  const startAudioMeter = async () => {
+    clearAudioMeter();
+
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaStreamRef.current = stream;
+
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    const context = new AudioContextClass();
+    const source = context.createMediaStreamSource(stream);
+    const analyser = context.createAnalyser();
+
+    analyser.fftSize = 512;
+    analyser.smoothingTimeConstant = 0.85;
+    source.connect(analyser);
+
+    audioContextRef.current = context;
+    analyserRef.current = analyser;
+    dataArrayRef.current = new Uint8Array(analyser.frequencyBinCount);
+
+    const tick = () => {
+      if (!analyserRef.current || !dataArrayRef.current) {
+        return;
+      }
+
+      analyserRef.current.getByteTimeDomainData(dataArrayRef.current);
+
+      let sumSquares = 0;
+      for (let i = 0; i < dataArrayRef.current.length; i += 1) {
+        const normalized = (dataArrayRef.current[i] - 128) / 128;
+        sumSquares += normalized * normalized;
+      }
+
+      const rms = Math.sqrt(sumSquares / dataArrayRef.current.length);
+      const liveLevel = Math.min(1, rms * 4.2);
+      const now = performance.now() * 0.003;
+      setMicLevel(liveLevel);
+      setRingDrift({
+        a: Math.sin(now) * liveLevel * 10,
+        b: Math.sin(now + 1.8) * liveLevel * 14,
+        c: Math.sin(now + 3.1) * liveLevel * 18,
+      });
+      animationFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    tick();
+  };
+
+  const stopSpeaking = () => {
+    if (!ttsSupported) {
+      return;
+    }
+    window.speechSynthesis.cancel();
+    setIsSpeaking(false);
+  };
+
+  useEffect(() => {
+    if (!ttsSupported) {
+      return undefined;
+    }
+
+    const pickVoice = (voiceList) => {
+      return (
+        voiceList.find(
+          (voice) =>
+            voice.lang.toLowerCase() === "en-gb" &&
+            voice.name.toLowerCase().includes("daniel"),
+        ) ||
+        voiceList.find(
+          (voice) =>
+            voice.lang.toLowerCase().startsWith("en-gb") &&
+            voice.name.toLowerCase().includes("daniel"),
+        ) ||
+        voiceList.find((voice) => voice.lang.toLowerCase().startsWith("en-gb")) ||
+        voiceList.find((voice) => voice.lang.toLowerCase().startsWith("en")) ||
+        voiceList[0] ||
+        null
+      );
+    };
+
+    const loadVoices = () => {
+      const list = window.speechSynthesis.getVoices();
+      voicesRef.current = list;
+      selectedVoiceRef.current = pickVoice(list);
+    };
+
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      window.speechSynthesis.cancel();
+    };
+  }, [ttsSupported]);
+
+  useEffect(() => {
+    return () => {
+      clearAudioMeter();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ttsSupported || !response) {
+      return;
+    }
+
+    const utterance = new SpeechSynthesisUtterance(response);
+    const voice = selectedVoiceRef.current;
+
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    } else {
+      utterance.lang = "en-GB";
+    }
+
+    utterance.rate = 0.95;
+    utterance.pitch = 1;
+    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onend = () => setIsSpeaking(false);
+    utterance.onerror = () => setIsSpeaking(false);
+
+    window.speechSynthesis.cancel();
+    window.speechSynthesis.speak(utterance);
+  }, [response, ttsSupported]);
+
+  const sendToClaude = async (messageText) => {
+    setIsLoading(true);
+    setError("");
+    setResponse("");
+
+    try {
+      const threadContext =
+        shotThread.length > 0
+          ? shotThread
+              .map((turn) => `${turn.role === "user" ? "Golfer" : "Coach"}: ${turn.text}`)
+              .join("\n")
+          : "";
+      const prompt = isReplyMode
+        ? `You are continuing the same golf shot conversation.\n\nConversation so far:\n${threadContext}\n\nLatest golfer update:\n${messageText}\n\nRespond with the next coaching reply.`
+        : messageText;
+
+      const res = await fetch(BACKEND_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ prompt, coachingStyle }),
+      });
+
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        const details =
+          typeof body?.details === "string" ? ` ${body.details}` : "";
+        throw new Error(
+          `Backend API error (${res.status}): ${
+            body?.error || "Unable to process request."
+          }${details}`,
+        );
+      }
+
+      const data = await res.json();
+      const nextResponse = data.response || "No response text received.";
+      setResponse(nextResponse);
+      setShotThread((prev) => [
+        ...prev,
+        { role: "user", text: messageText },
+        { role: "assistant", text: nextResponse },
+      ]);
+      setIsReplyMode(true);
+    } catch (err) {
+      setError(err.message || "Failed to call backend API.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const createRecognition = () => {
+    const recognition = new SpeechRecognition();
+    recognition.lang = "en-US";
+    recognition.interimResults = true;
+    recognition.continuous = true;
+    recognition.maxAlternatives = 1;
+
+    recognition.onresult = (event) => {
+      let fullTranscript = "";
+      for (let i = 0; i < event.results.length; i += 1) {
+        fullTranscript += event.results[i][0].transcript;
+      }
+      const nextTranscript = fullTranscript.trim();
+      transcriptRef.current = nextTranscript;
+      setTranscript(nextTranscript);
+    };
+
+    recognition.onerror = (event) => {
+      setError(`Speech recognition error: ${event.error}`);
+      setIsListening(false);
+      clearAudioMeter();
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      clearAudioMeter();
+      if (!shouldSubmitRef.current) {
+        return;
+      }
+      shouldSubmitRef.current = false;
+      const finalText = transcriptRef.current.trim();
+      if (finalText) {
+        void sendToClaude(finalText);
+      }
+    };
+
+    return recognition;
+  };
+
+  const startListening = async () => {
+    if (!speechSupported || isLoading || isListening) {
+      return;
+    }
+
+    shouldSubmitRef.current = false;
+    setError("");
+    setTranscript("");
+    transcriptRef.current = "";
+    if (!isReplyMode) {
+      setResponse("");
+    }
+    stopSpeaking();
+
+    try {
+      await startAudioMeter();
+    } catch {
+      setError("Microphone meter unavailable. Recording may still work.");
+    }
+
+    const recognition = createRecognition();
+    recognitionRef.current = recognition;
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch {
+      clearAudioMeter();
+      setError("Could not start microphone. Check browser mic permissions.");
+    }
+  };
+
+  const stopListening = () => {
+    shouldSubmitRef.current = true;
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    } else {
+      clearAudioMeter();
+    }
+  };
+
+  const toggleListening = () => {
+    if (isListening) {
+      stopListening();
+      return;
+    }
+    void startListening();
+  };
+
+  const handleKeyDown = (event) => {
+    if ((event.code === "Space" || event.code === "Enter") && !event.repeat) {
+      event.preventDefault();
+      toggleListening();
+    }
+  };
+
+  const visualState = isListening
+    ? "listening"
+    : isLoading
+      ? "thinking"
+      : isSpeaking
+        ? "speaking"
+        : "idle";
+
+  const buttonLabel = isListening
+    ? "TAP TO STOP"
+    : isLoading
+      ? ""
+      : isSpeaking
+        ? ""
+        : "TAP TO TALK";
+  const showPostResponseActions =
+    Boolean(response) && !isSpeaking && !isListening && !isLoading;
+
+  const handleReply = () => {
+    setError("");
+    setTranscript("");
+    transcriptRef.current = "";
+  };
+
+  const handleNextShot = () => {
+    stopSpeaking();
+    clearAudioMeter();
+    setIsListening(false);
+    setIsLoading(false);
+    setTranscript("");
+    transcriptRef.current = "";
+    setResponse("");
+    setError("");
+    setIsReplyMode(false);
+    setShotThread([]);
+    setWaitingPhrase((current) => pickNextPhrase(current));
+  };
+
+  return (
+    <main className="app-shell">
+      <section className="panel">
+        <h1>rangeWhisperer</h1>
+        <p className="tagline">Better. Every single session.</p>
+        <p className="instructions">
+          {showPostResponseActions
+            ? "Review the cue, then reply or move to the next shot."
+            : waitingPhrase}
+        </p>
+
+        <button
+          type="button"
+          className={`ptt-button ${visualState}`}
+          style={{
+            "--level": micLevel.toFixed(3),
+            "--energy": micLevel.toFixed(3),
+            "--drift-a": `${ringDrift.a.toFixed(2)}px`,
+            "--drift-b": `${ringDrift.b.toFixed(2)}px`,
+            "--drift-c": `${ringDrift.c.toFixed(2)}px`,
+          }}
+          onClick={toggleListening}
+          onKeyDown={handleKeyDown}
+          disabled={!speechSupported}
+        >
+          <span className="ring ring-1" />
+          <span className="ring ring-2" />
+          <span className="ring ring-3" />
+          <span className="button-core">
+            {buttonLabel && <span className="button-label">{buttonLabel}</span>}
+          </span>
+        </button>
+
+        {!speechSupported && (
+          <p className="status error">
+            Web Speech API is not supported in this browser.
+          </p>
+        )}
+        {error && <p className="status error">{error}</p>}
+
+        <div className="output-grid">
+          <div className="card">
+            <h2>Transcript</h2>
+            <p>{transcript || "Your captured speech appears here."}</p>
+          </div>
+          <div className="card">
+            <h2>COACH</h2>
+            <p>{response || "Your caddy-style cue appears here."}</p>
+            {isSpeaking && (
+              <button type="button" className="stop-button" onClick={stopSpeaking}>
+                🔇 Stop
+              </button>
+            )}
+            {showPostResponseActions && (
+              <div className="shot-actions">
+                <button type="button" className="action-button" onClick={handleReply}>
+                  Reply
+                </button>
+                <button
+                  type="button"
+                  className="action-button action-button-secondary"
+                  onClick={handleNextShot}
+                >
+                  Next Shot
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+    </main>
+  );
+}
+
+export default App;
