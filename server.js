@@ -43,9 +43,60 @@ function buildSystemPrompt(coachingStyle) {
   );
 }
 
-function buildAnthropicPayload(prompt, coachingStyle) {
+function buildProfileSystemPrefix(profile) {
+  if (!profile || typeof profile !== "object") {
+    return "";
+  }
+
+  const first =
+    typeof profile.first_name === "string" ? profile.first_name.trim() : "";
+  const hand =
+    profile.dominant_hand === "left" || profile.dominant_hand === "right"
+      ? profile.dominant_hand
+      : null;
+  const rawH = profile.handicap;
+  const hasHandicap =
+    rawH !== undefined &&
+    rawH !== null &&
+    String(rawH).trim() !== "" &&
+    !Number.isNaN(Number(rawH));
+
+  let line = "";
+  if (first) {
+    if (hasHandicap && hand) {
+      line = `You are coaching ${first}, a ${Number(rawH)}-handicap ${hand}-handed golfer. Address them by name.`;
+    } else if (hasHandicap) {
+      line = `You are coaching ${first}, a ${Number(rawH)}-handicap golfer. Address them by name.`;
+    } else if (hand) {
+      line = `You are coaching ${first}, a ${hand}-handed golfer. Address them by name.`;
+    } else {
+      line = `You are coaching ${first}. Address them by name.`;
+    }
+  }
+
+  const styleHint =
+    typeof profile.coaching_style === "string" && profile.coaching_style.trim()
+      ? profile.coaching_style.trim()
+      : "";
+
+  const parts = [];
+  if (line) parts.push(line);
+  if (styleHint && first) {
+    parts.push(`They prefer the "${styleHint}" coaching style.`);
+  } else if (styleHint) {
+    parts.push(`Preferred coaching style: "${styleHint}".`);
+  }
+
+  if (!parts.length) {
+    return "";
+  }
+  return `${parts.join("\n")}\n\n`;
+}
+
+function buildAnthropicPayload(prompt, coachingStyle, profile) {
+  const prefix = buildProfileSystemPrefix(profile);
   return {
-    system: buildSystemPrompt(coachingStyle),
+    system: prefix + buildSystemPrompt(coachingStyle),
     model: ANTHROPIC_MODEL,
     max_tokens: 512,
     messages: [{ role: "user", content: prompt }],
@@ -55,11 +106,15 @@ function buildAnthropicPayload(prompt, coachingStyle) {
 app.use(express.json());
 
 app.post("/api/ask", async (req, res) => {
-  const { prompt, coachingStyle } = req.body ?? {};
+  const { prompt, coachingStyle, profile } = req.body ?? {};
   const resolvedCoachingStyle =
-    typeof coachingStyle === "string" && coachingStyle.trim()
-      ? coachingStyle.trim()
-      : DEFAULT_COACHING_STYLE;
+    profile &&
+    typeof profile.coaching_style === "string" &&
+    profile.coaching_style.trim()
+      ? profile.coaching_style.trim()
+      : typeof coachingStyle === "string" && coachingStyle.trim()
+        ? coachingStyle.trim()
+        : DEFAULT_COACHING_STYLE;
   const requestStartedAt = new Date().toISOString();
   const promptPreview =
     typeof prompt === "string" ? `${prompt.slice(0, 120)}${prompt.length > 120 ? "..." : ""}` : "";
@@ -79,7 +134,11 @@ app.post("/api/ask", async (req, res) => {
     console.log(
       `[${requestStartedAt}] /api/ask -> Anthropic model=${ANTHROPIC_MODEL} style="${resolvedCoachingStyle}" prompt="${promptPreview}"`,
     );
-    const anthropicPayload = buildAnthropicPayload(prompt, resolvedCoachingStyle);
+    const anthropicPayload = buildAnthropicPayload(
+      prompt,
+      resolvedCoachingStyle,
+      profile,
+    );
     if (!anthropicPayload.system) {
       throw new Error("System prompt is empty and cannot be sent to Anthropic.");
     }
