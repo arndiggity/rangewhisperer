@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { BottomNav } from "./components/BottomNav.jsx";
+import { CoachScreen } from "./screens/CoachScreen.jsx";
+import { PlaceholderScreen } from "./screens/PlaceholderScreen.jsx";
+
 const BACKEND_TRANSCRIBE_URL = "/api/transcribe";
 const BACKEND_API_URL = "/api/ask";
+
+/** Waiting phrases — order matches `downwind-product-brief.md` (20 random). */
 const WAITING_PHRASES = [
   "Waiting for your next shot, big dog.",
+  "Grip it. Rip it. Tell me everything.",
+  "Every miss is data. Every hit is progress.",
   "The range doesn't lie. Let's see it.",
   "Ready when you are.",
   "Step up. Let's go.",
@@ -13,16 +21,14 @@ const WAITING_PHRASES = [
   "One shot at a time. Make it count.",
   "The best swing of your life could be next.",
   "No judgement. Just improvement.",
-  "Grip it. Rip it. Tell me everything.",
-  "Every miss is data. Every hit is progress.",
   "The range is yours. I am listening.",
   "Breathe. Align. Fire away.",
-  "What is the club? What is the target? Let us go.",
   "Your caddy is ready. Are you?",
   "Another shot, another lesson.",
   "Trust the process. Hit the ball.",
   "I have got all session. You have got this.",
   "Less thinking. More swinging. Then tell me.",
+  "What is the club? What is the target? Let us go.",
 ];
 
 const pickNextPhrase = (currentPhrase) => {
@@ -33,6 +39,16 @@ const pickNextPhrase = (currentPhrase) => {
   const candidates = WAITING_PHRASES.filter((phrase) => phrase !== currentPhrase);
   return candidates[Math.floor(Math.random() * candidates.length)];
 };
+
+function safeVibrate(pattern) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.vibrate) {
+      navigator.vibrate(pattern);
+    }
+  } catch {
+    /* ignore */
+  }
+}
 
 function App() {
   const mediaRecorderRef = useRef(null);
@@ -60,6 +76,10 @@ function App() {
   const [isReplyMode, setIsReplyMode] = useState(false);
   const [shotThread, setShotThread] = useState([]);
   const [coachingStyle] = useState("The Caddy");
+  const [activeTab, setActiveTab] = useState("coach");
+
+  const prevLoadingRef = useRef(false);
+  const prevIdleRef = useRef(null);
 
   const recordingSupported = useMemo(
     () =>
@@ -194,6 +214,33 @@ function App() {
     };
   }, []);
 
+  /** New waiting phrase whenever we enter full idle (no response, not capturing, not thinking). */
+  useEffect(() => {
+    const idle =
+      !isListening &&
+      !isLoading &&
+      !isSpeaking &&
+      !response;
+
+    if (prevIdleRef.current === null) {
+      prevIdleRef.current = idle;
+      return;
+    }
+
+    if (!prevIdleRef.current && idle) {
+      setWaitingPhrase((current) => pickNextPhrase(current));
+    }
+    prevIdleRef.current = idle;
+  }, [isListening, isLoading, isSpeaking, response]);
+
+  /** THINKING haptic when /api/transcribe + /api/ask loading starts. */
+  useEffect(() => {
+    if (isLoading && !prevLoadingRef.current) {
+      safeVibrate([50, 50, 50]);
+    }
+    prevLoadingRef.current = isLoading;
+  }, [isLoading]);
+
   useEffect(() => {
     if (!ttsSupported || !response) {
       return;
@@ -211,7 +258,10 @@ function App() {
 
     utterance.rate = 0.95;
     utterance.pitch = 1;
-    utterance.onstart = () => setIsSpeaking(true);
+    utterance.onstart = () => {
+      safeVibrate(100);
+      setIsSpeaking(true);
+    };
     utterance.onend = () => setIsSpeaking(false);
     utterance.onerror = () => setIsSpeaking(false);
 
@@ -420,6 +470,7 @@ function App() {
       stopListening();
       return;
     }
+    safeVibrate(50);
     void startListening();
   };
 
@@ -445,13 +496,17 @@ function App() {
       : isSpeaking
         ? ""
         : "TAP TO TALK";
+
   const showPostResponseActions =
     Boolean(response) && !isSpeaking && !isListening && !isLoading;
 
+  const showWaitingPhrase =
+    !response && !isListening && !isLoading;
+
+  const showCoachCard = Boolean(response);
+
   const handleReply = () => {
     setError("");
-    setTranscript("");
-    transcriptRef.current = "";
   };
 
   const handleNextShot = () => {
@@ -473,76 +528,34 @@ function App() {
   };
 
   return (
-    <main className="app-shell">
-      <section className="panel">
-        <h1>rangeWhisperer</h1>
-        <p className="tagline">Better. Every single session.</p>
-        <p className="instructions">
-          {showPostResponseActions
-            ? "Review the cue, then reply or move to the next shot."
-            : waitingPhrase}
-        </p>
-
-        <button
-          type="button"
-          className={`ptt-button ${visualState}`}
-          style={{
-            "--level": micLevel.toFixed(3),
-            "--energy": micLevel.toFixed(3),
-            "--drift-a": `${ringDrift.a.toFixed(2)}px`,
-            "--drift-b": `${ringDrift.b.toFixed(2)}px`,
-            "--drift-c": `${ringDrift.c.toFixed(2)}px`,
-          }}
-          onClick={toggleListening}
-          onKeyDown={handleKeyDown}
-          disabled={!recordingSupported}
-        >
-          <span className="ring ring-1" />
-          <span className="ring ring-2" />
-          <span className="ring ring-3" />
-          <span className="button-core">
-            {buttonLabel && <span className="button-label">{buttonLabel}</span>}
-          </span>
-        </button>
-
-        {!recordingSupported && (
-          <p className="status error">
-            MediaRecorder or microphone access is not available in this browser.
-          </p>
-        )}
-        {error && <p className="status error">{error}</p>}
-
-        <div className="output-grid">
-          <div className="card">
-            <h2>Transcript</h2>
-            <p>{transcript || "Your captured speech appears here."}</p>
-          </div>
-          <div className="card">
-            <h2>COACH</h2>
-            <p>{response || "Your caddy-style cue appears here."}</p>
-            {isSpeaking && (
-              <button type="button" className="stop-button" onClick={stopSpeaking}>
-                🔇 Stop
-              </button>
-            )}
-            {showPostResponseActions && (
-              <div className="shot-actions">
-                <button type="button" className="action-button" onClick={handleReply}>
-                  Reply
-                </button>
-                <button
-                  type="button"
-                  className="action-button action-button-secondary"
-                  onClick={handleNextShot}
-                >
-                  Next Shot
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      </section>
-    </main>
+    <div className="dw-app">
+      {activeTab === "coach" && (
+        <CoachScreen
+          waitingPhrase={waitingPhrase}
+          showWaitingPhrase={showWaitingPhrase}
+          visualState={visualState}
+          isListening={isListening}
+          recordingSupported={recordingSupported}
+          buttonLabel={buttonLabel}
+          micLevel={micLevel}
+          ringDrift={ringDrift}
+          transcript={transcript}
+          response={response}
+          showCoachCard={showCoachCard}
+          error={error}
+          showActionBar={showPostResponseActions}
+          isSpeaking={isSpeaking}
+          onVoiceButtonClick={toggleListening}
+          onVoiceKeyDown={handleKeyDown}
+          onReply={handleReply}
+          onNextShot={handleNextShot}
+          onStopSpeaking={stopSpeaking}
+        />
+      )}
+      {activeTab === "programmes" && <PlaceholderScreen title="Programmes" />}
+      {activeTab === "my-golf" && <PlaceholderScreen title="My Golf" />}
+      <BottomNav active={activeTab} onSelect={setActiveTab} />
+    </div>
   );
 }
 
