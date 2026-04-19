@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-const SpeechRecognition =
-  window.SpeechRecognition || window.webkitSpeechRecognition;
+const BACKEND_TRANSCRIBE_URL = "/api/transcribe";
 const BACKEND_API_URL = "/api/ask";
 const WAITING_PHRASES = [
   "Waiting for your next shot, big dog.",
@@ -36,8 +35,9 @@ const pickNextPhrase = (currentPhrase) => {
 };
 
 function App() {
-  const recognitionRef = useRef(null);
-  const shouldSubmitRef = useRef(false);
+  const mediaRecorderRef = useRef(null);
+  const recordedChunksRef = useRef([]);
+  const shouldTranscribeRef = useRef(false);
   const transcriptRef = useRef("");
   const voicesRef = useRef([]);
   const selectedVoiceRef = useRef(null);
@@ -61,7 +61,13 @@ function App() {
   const [shotThread, setShotThread] = useState([]);
   const [coachingStyle] = useState("The Caddy");
 
-  const speechSupported = useMemo(() => Boolean(SpeechRecognition), []);
+  const recordingSupported = useMemo(
+    () =>
+      typeof window !== "undefined" &&
+      typeof MediaRecorder !== "undefined" &&
+      Boolean(navigator.mediaDevices?.getUserMedia),
+    [],
+  );
   const ttsSupported = useMemo(
     () => typeof window !== "undefined" && "speechSynthesis" in window,
     [],
@@ -89,12 +95,7 @@ function App() {
     setRingDrift({ a: 0, b: 0, c: 0 });
   };
 
-  const startAudioMeter = async () => {
-    clearAudioMeter();
-
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    mediaStreamRef.current = stream;
-
+  const attachAudioMeterFromStream = (stream) => {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     const context = new AudioContextClass();
     const source = context.createMediaStreamSource(stream);
@@ -185,6 +186,10 @@ function App() {
 
   useEffect(() => {
     return () => {
+      shouldTranscribeRef.current = false;
+      if (mediaRecorderRef.current?.state === "recording") {
+        mediaRecorderRef.current.stop();
+      }
       clearAudioMeter();
     };
   }, []);
@@ -265,51 +270,12 @@ function App() {
     }
   };
 
-  const createRecognition = () => {
-    const recognition = new SpeechRecognition();
-    recognition.lang = "en-US";
-    recognition.interimResults = true;
-    recognition.continuous = false;
-    recognition.maxAlternatives = 1;
-
-    recognition.onresult = (event) => {
-      let fullTranscript = "";
-      for (let i = 0; i < event.results.length; i += 1) {
-        fullTranscript += event.results[i][0].transcript;
-      }
-      const nextTranscript = fullTranscript.trim();
-      transcriptRef.current = nextTranscript;
-      setTranscript(nextTranscript);
-    };
-
-    recognition.onerror = (event) => {
-      setError(`Speech recognition error: ${event.error}`);
-      setIsListening(false);
-      clearAudioMeter();
-    };
-
-    recognition.onend = () => {
-      setIsListening(false);
-      clearAudioMeter();
-      if (!shouldSubmitRef.current) {
-        return;
-      }
-      shouldSubmitRef.current = false;
-      const finalText = transcriptRef.current.trim();
-      if (finalText) {
-        void sendToClaude(finalText);
-      }
-    };
-
-    return recognition;
-  };
-
   const startListening = async () => {
-    if (!speechSupported || isLoading || isListening) {
+    if (!recordingSupported || isLoading || isListening) {
       return;
     }
 
-    shouldSubmitRef.current = false;
+    shouldTranscribeRef.current = false;
     setError("");
     setTranscript("");
     transcriptRef.current = "";
@@ -317,29 +283,133 @@ function App() {
       setResponse("");
     }
     stopSpeaking();
+    clearAudioMeter();
 
     try {
-      await startAudioMeter();
-    } catch {
-      setError("Microphone meter unavailable. Recording may still work.");
-    }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      mediaStreamRef.current = stream;
 
-    const recognition = createRecognition();
-    recognitionRef.current = recognition;
+      try {
+        attachAudioMeterFromStream(stream);
+      } catch {
+        setError("Audio meter unavailable. Recording will still work.");
+      }
 
-    try {
-      recognition.start();
+      recordedChunksRef.current = [];
+      const mimeCandidates = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+      const mimeType = mimeCandidates.find((type) =>
+        MediaRecorder.isTypeSupported(type),
+      );
+
+      const recorder = new MediaRecorder(
+        stream,
+        mimeType ? { mimeType } : undefined,
+      );
+      mediaRecorderRef.current = recorder;
+
+      recorder.ondataavailable = (event) => {
+        if (event.data && event.data.size > 0) {
+          recordedChunksRef.current.push(event.data);
+        }
+      };
+
+      recorder.onerror = (event) => {
+        const message =
+          event.error?.message || String(event.error || "Unknown error");
+        setError(`Recording error: ${message}`);
+        setIsListening(false);
+        clearAudioMeter();
+        mediaRecorderRef.current = null;
+      };
+
+      recorder.onstop = async () => {
+        setIsListening(false);
+        clearAudioMeter();
+
+        const shouldSubmit = shouldTranscribeRef.current;
+        shouldTranscribeRef.current = false;
+
+        const resolvedMime = recorder.mimeType || "audio/webm";
+        mediaRecorderRef.current = null;
+
+        const blob = new Blob(recordedChunksRef.current, {
+          type: resolvedMime,
+        });
+        recordedChunksRef.current = [];
+
+        if (!shouldSubmit) {
+          return;
+        }
+
+        if (blob.size === 0) {
+          setError("No audio captured.");
+          return;
+        }
+
+        setIsLoading(true);
+        setError("");
+        try {
+          const ext = resolvedMime.includes("mp4")
+            ? "m4a"
+            : resolvedMime.includes("webm")
+              ? "webm"
+              : "webm";
+          const formData = new FormData();
+          formData.append("file", blob, `recording.${ext}`);
+
+          const res = await fetch(BACKEND_TRANSCRIBE_URL, {
+            method: "POST",
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            const details =
+              typeof body?.details === "string" ? ` ${body.details}` : "";
+            throw new Error(
+              `Transcription error (${res.status}): ${
+                body?.error || "Unable to transcribe."
+              }${details}`,
+            );
+          }
+
+          const data = await res.json();
+          const text =
+            typeof data.transcript === "string" ? data.transcript.trim() : "";
+          if (!text) {
+            throw new Error("Empty transcript.");
+          }
+
+          setTranscript(text);
+          transcriptRef.current = text;
+          await sendToClaude(text);
+        } catch (err) {
+          setError(err.message || "Transcription failed.");
+        } finally {
+          setIsLoading(false);
+        }
+      };
+
+      recorder.start();
       setIsListening(true);
-    } catch {
+    } catch (err) {
       clearAudioMeter();
-      setError("Could not start microphone. Check browser mic permissions.");
+      setError(
+        err instanceof Error
+          ? err.message
+          : "Could not start microphone. Check browser mic permissions.",
+      );
     }
   };
 
   const stopListening = () => {
-    shouldSubmitRef.current = true;
-    if (recognitionRef.current) {
-      recognitionRef.current.stop();
+    shouldTranscribeRef.current = true;
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
     } else {
       clearAudioMeter();
     }
@@ -386,6 +456,10 @@ function App() {
 
   const handleNextShot = () => {
     stopSpeaking();
+    shouldTranscribeRef.current = false;
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop();
+    }
     clearAudioMeter();
     setIsListening(false);
     setIsLoading(false);
@@ -421,7 +495,7 @@ function App() {
           }}
           onClick={toggleListening}
           onKeyDown={handleKeyDown}
-          disabled={!speechSupported}
+          disabled={!recordingSupported}
         >
           <span className="ring ring-1" />
           <span className="ring ring-2" />
@@ -431,9 +505,9 @@ function App() {
           </span>
         </button>
 
-        {!speechSupported && (
+        {!recordingSupported && (
           <p className="status error">
-            Web Speech API is not supported in this browser.
+            MediaRecorder or microphone access is not available in this browser.
           </p>
         )}
         {error && <p className="status error">{error}</p>}
