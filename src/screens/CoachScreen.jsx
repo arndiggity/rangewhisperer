@@ -1,7 +1,8 @@
 /**
- * Coach (main) screen — presentation only. Voice / API logic lives in App.jsx.
+ * Coach (main) screen — presentation only. Voice / API logic lives in CoachExperience.jsx.
  */
 export function CoachScreen({
+  profile,
   waitingPhrase,
   showWaitingPhrase,
   visualState,
@@ -21,10 +22,37 @@ export function CoachScreen({
   onReply,
   onNextShot,
   onStopSpeaking,
+  onSignOut,
 }) {
   return (
-    <div className="dw-coach">
+    <div
+      className="dw-coach"
+      data-profile-name={profile?.first_name ?? ""}
+    >
       <header className="dw-logo-banner">
+        {typeof onSignOut === "function" ? (
+          <button
+            type="button"
+            className="dw-sign-out"
+            onClick={onSignOut}
+            aria-label="Sign out"
+          >
+            <svg
+              className="dw-sign-out-icon"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.75"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden
+            >
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+              <polyline points="16 17 21 12 16 7" />
+              <line x1="21" y1="12" x2="9" y2="12" />
+            </svg>
+          </button>
+        ) : null}
         <div className="dw-logo-text">downwind</div>
         <p className="dw-logo-tagline">Better. Every single session, big dog.</p>
       </header>
