@@ -1,16 +1,17 @@
 import "dotenv/config";
 import express from "express";
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const app = express();
 const PORT = 3001;
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-haiku-latest";
 const DEFAULT_COACHING_STYLE = "The Caddy";
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 const SYSTEM_PROMPT_PATH = path.join(__dirname, "whisper-system-prompt.md");
 
 function loadWhisperSystemPrompt() {
@@ -119,6 +120,12 @@ app.post("/api/ask", async (req, res) => {
 const systemPreview = WHISPER_SYSTEM_PROMPT_TEMPLATE.slice(0, 100);
 console.log(`Loaded system prompt (first 100 chars): ${systemPreview}`);
 console.log(`Default coaching style: ${DEFAULT_COACHING_STYLE}`);
+
+
+app.use(express.static(path.join(__dirname, "dist")));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
+});
 
 const server = app.listen(PORT, () => {
   // Minimal startup log for local development.
