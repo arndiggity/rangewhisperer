@@ -117,6 +117,60 @@ body {
   height: 16px;
 }
 
+/* Range session (longitudinal memory) */
+.dw-session-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.4rem 1rem 0.65rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.dw-session-active {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.dw-session-status {
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: rgba(238, 238, 255, 0.55);
+}
+
+.dw-session-pill {
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  cursor: pointer;
+  touch-action: manipulation;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(238, 238, 255, 0.85);
+}
+
+.dw-session-pill--cta {
+  padding: 8px 16px;
+}
+
+.dw-session-pill--end {
+  padding: 6px 12px;
+  color: rgba(238, 238, 255, 0.65);
+}
+
+.dw-session-pill:active {
+  background: rgba(255, 255, 255, 0.11);
+}
+
 .dw-logo-text {
   font-family: "Cormorant Garamond", Georgia, serif;
   font-style: italic;

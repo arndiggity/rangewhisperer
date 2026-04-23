@@ -110,7 +110,11 @@ function App() {
   }
 
   return (
-    <CoachExperience profile={profile} onSignOut={handleSignOut} />
+    <CoachExperience
+      profile={profile}
+      userId={session.user.id}
+      onSignOut={handleSignOut}
+    />
   );
 }
 

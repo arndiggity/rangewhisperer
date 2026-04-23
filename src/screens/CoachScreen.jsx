@@ -3,6 +3,9 @@
  */
 export function CoachScreen({
   profile,
+  rangeSession,
+  onStartRangeSession,
+  onEndRangeSession,
   waitingPhrase,
   showWaitingPhrase,
   visualState,
@@ -56,6 +59,34 @@ export function CoachScreen({
         <div className="dw-logo-text">downwind</div>
         <p className="dw-logo-tagline">Better. Every single session, big dog.</p>
       </header>
+
+      {typeof onStartRangeSession === "function" &&
+      typeof onEndRangeSession === "function" ? (
+        <div className="dw-session-bar">
+          {!rangeSession ? (
+            <button
+              type="button"
+              className="dw-session-pill dw-session-pill--cta"
+              onClick={onStartRangeSession}
+            >
+              Start Range Session
+            </button>
+          ) : (
+            <div className="dw-session-active">
+              <span className="dw-session-status">
+                Session active · {rangeSession.shot_count ?? 0} shots
+              </span>
+              <button
+                type="button"
+                className="dw-session-pill dw-session-pill--end"
+                onClick={onEndRangeSession}
+              >
+                End
+              </button>
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <div className="dw-coach-body">
         <div className="dw-whisper-status">

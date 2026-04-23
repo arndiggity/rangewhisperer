@@ -93,10 +93,40 @@ function buildProfileSystemPrefix(profile) {
   return `${parts.join("\n")}\n\n`;
 }
 
-function buildAnthropicPayload(prompt, coachingStyle, profile) {
+const MAX_RECENT_SHOTS = 20;
+
+function buildRecentShotsBlock(recentShots) {
+  if (!Array.isArray(recentShots) || recentShots.length === 0) {
+    return "";
+  }
+
+  const normalized = recentShots
+    .filter(
+      (row) =>
+        row &&
+        typeof row.transcript === "string" &&
+        typeof row.whisper_response === "string",
+    )
+    .slice(-MAX_RECENT_SHOTS);
+
+  if (!normalized.length) {
+    return "";
+  }
+
+  const lines = normalized.flatMap((row) => [
+    `Golfer said: "${row.transcript}"`,
+    `You replied: "${row.whisper_response}"`,
+  ]);
+
+  return `RECENT SHOT HISTORY (last shots, oldest first):\n\n${lines.join("\n")}\n\n`;
+}
+
+function buildAnthropicPayload(prompt, coachingStyle, profile, recentShots) {
   const prefix = buildProfileSystemPrefix(profile);
+  const base = buildSystemPrompt(coachingStyle);
+  const recent = buildRecentShotsBlock(recentShots);
   return {
-    system: prefix + buildSystemPrompt(coachingStyle),
+    system: prefix + base + recent,
     model: ANTHROPIC_MODEL,
     max_tokens: 512,
     messages: [{ role: "user", content: prompt }],
@@ -106,7 +136,7 @@ function buildAnthropicPayload(prompt, coachingStyle, profile) {
 app.use(express.json());
 
 app.post("/api/ask", async (req, res) => {
-  const { prompt, coachingStyle, profile } = req.body ?? {};
+  const { prompt, coachingStyle, profile, recentShots } = req.body ?? {};
   const resolvedCoachingStyle =
     profile &&
     typeof profile.coaching_style === "string" &&
@@ -138,6 +168,7 @@ app.post("/api/ask", async (req, res) => {
       prompt,
       resolvedCoachingStyle,
       profile,
+      recentShots,
     );
     if (!anthropicPayload.system) {
       throw new Error("System prompt is empty and cannot be sent to Anthropic.");

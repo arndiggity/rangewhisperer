@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { BottomNav } from "./components/BottomNav.jsx";
+import { supabase } from "./lib/supabase.js";
 import { CoachScreen } from "./screens/CoachScreen.jsx";
 import { PlaceholderScreen } from "./screens/PlaceholderScreen.jsx";
 
@@ -59,7 +60,21 @@ function profileApiPayload(profile) {
   };
 }
 
-export function CoachExperience({ profile, onSignOut }) {
+async function fetchRecentShotsForAsk(userId) {
+  const { data, error } = await supabase
+    .from("shots")
+    .select("transcript, whisper_response")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(20);
+
+  if (error || !data?.length) {
+    return [];
+  }
+  return [...data].reverse();
+}
+
+export function CoachExperience({ profile, userId, onSignOut }) {
   const mediaRecorderRef = useRef(null);
   const recordedChunksRef = useRef([]);
   const shouldTranscribeRef = useRef(false);
@@ -85,6 +100,12 @@ export function CoachExperience({ profile, onSignOut }) {
   const [isReplyMode, setIsReplyMode] = useState(false);
   const [shotThread, setShotThread] = useState([]);
   const [activeTab, setActiveTab] = useState("coach");
+  const [currentSession, setCurrentSession] = useState(null);
+
+  const currentSessionRef = useRef(null);
+  useEffect(() => {
+    currentSessionRef.current = currentSession;
+  }, [currentSession]);
 
   const coachingStyle =
     typeof profile?.coaching_style === "string" && profile.coaching_style.trim()
@@ -282,6 +303,140 @@ export function CoachExperience({ profile, onSignOut }) {
     window.speechSynthesis.speak(utterance);
   }, [response, ttsSupported]);
 
+  useEffect(() => {
+    if (!userId) {
+      return undefined;
+    }
+    let cancelled = false;
+
+    (async () => {
+      const { data, error } = await supabase
+        .from("sessions")
+        .select("id, started_at, shot_count")
+        .eq("user_id", userId)
+        .is("ended_at", null)
+        .order("started_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (cancelled || error) {
+        return;
+      }
+      if (data && !currentSessionRef.current) {
+        const row = {
+          id: data.id,
+          started_at: data.started_at,
+          shot_count: data.shot_count ?? 0,
+        };
+        currentSessionRef.current = row;
+        setCurrentSession(row);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const persistShotAfterResponse = useCallback(
+    async (messageText, whisperResponse) => {
+      if (!userId) {
+        return;
+      }
+      try {
+        let sessionRow = currentSessionRef.current;
+        if (!sessionRow) {
+          const { data: created, error: createErr } = await supabase
+            .from("sessions")
+            .insert({ user_id: userId })
+            .select("id, started_at, shot_count")
+            .single();
+          if (createErr) {
+            throw createErr;
+          }
+          sessionRow = {
+            id: created.id,
+            started_at: created.started_at,
+            shot_count: created.shot_count ?? 0,
+          };
+          currentSessionRef.current = sessionRow;
+          setCurrentSession(sessionRow);
+        }
+
+        const { error: shotErr } = await supabase.from("shots").insert({
+          user_id: userId,
+          session_id: sessionRow.id,
+          transcript: messageText,
+          whisper_response: whisperResponse,
+        });
+        if (shotErr) {
+          throw shotErr;
+        }
+
+        const nextCount = (sessionRow.shot_count ?? 0) + 1;
+        const { error: upErr } = await supabase
+          .from("sessions")
+          .update({ shot_count: nextCount })
+          .eq("id", sessionRow.id);
+        if (upErr) {
+          throw upErr;
+        }
+
+        const updated = { ...sessionRow, shot_count: nextCount };
+        currentSessionRef.current = updated;
+        setCurrentSession(updated);
+      } catch (err) {
+        console.error("persistShotAfterResponse:", err);
+      }
+    },
+    [userId],
+  );
+
+  const handleStartSession = useCallback(async () => {
+    if (!userId || currentSessionRef.current) {
+      return;
+    }
+    try {
+      const { data, error } = await supabase
+        .from("sessions")
+        .insert({ user_id: userId })
+        .select("id, started_at, shot_count")
+        .single();
+      if (error) {
+        throw error;
+      }
+      const row = {
+        id: data.id,
+        started_at: data.started_at,
+        shot_count: data.shot_count ?? 0,
+      };
+      currentSessionRef.current = row;
+      setCurrentSession(row);
+    } catch (err) {
+      console.error("handleStartSession:", err);
+    }
+  }, [userId]);
+
+  const handleEndSession = useCallback(async () => {
+    const sid = currentSessionRef.current?.id;
+    if (!sid) {
+      return;
+    }
+    try {
+      const { error } = await supabase
+        .from("sessions")
+        .update({ ended_at: new Date().toISOString() })
+        .eq("id", sid);
+      if (error) {
+        throw error;
+      }
+      currentSessionRef.current = null;
+      setCurrentSession(null);
+    } catch (err) {
+      console.error("handleEndSession:", err);
+    }
+  }, []);
+
   const sendToClaude = async (messageText) => {
     setIsLoading(true);
     setError("");
@@ -299,6 +454,8 @@ export function CoachExperience({ profile, onSignOut }) {
         : messageText;
 
       const apiProfile = profileApiPayload(profile);
+      const recentShots =
+        userId != null ? await fetchRecentShotsForAsk(userId) : [];
 
       const res = await fetch(BACKEND_API_URL, {
         method: "POST",
@@ -309,6 +466,7 @@ export function CoachExperience({ profile, onSignOut }) {
           prompt,
           coachingStyle,
           profile: apiProfile,
+          recentShots,
         }),
       });
 
@@ -332,6 +490,7 @@ export function CoachExperience({ profile, onSignOut }) {
         { role: "assistant", text: nextResponse },
       ]);
       setIsReplyMode(true);
+      await persistShotAfterResponse(messageText, nextResponse);
     } catch (err) {
       setError(err.message || "Failed to call backend API.");
     } finally {
@@ -551,6 +710,9 @@ export function CoachExperience({ profile, onSignOut }) {
       {activeTab === "coach" && (
         <CoachScreen
           profile={profile}
+          rangeSession={currentSession}
+          onStartRangeSession={handleStartSession}
+          onEndRangeSession={handleEndSession}
           waitingPhrase={waitingPhrase}
           showWaitingPhrase={showWaitingPhrase}
           visualState={visualState}
