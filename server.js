@@ -121,12 +121,20 @@ function buildRecentShotsBlock(recentShots) {
   return `RECENT SHOT HISTORY (last shots, oldest first):\n\n${lines.join("\n")}\n\n`;
 }
 
-function buildAnthropicPayload(prompt, coachingStyle, profile, recentShots) {
+function buildRephrasePrefix(rephrase) {
+  if (!rephrase) {
+    return "";
+  }
+  return "The golfer wants the same coaching concept explained differently. Don't give new advice or diagnose anything different. Give the SAME core cue using a different analogy, a different swing thought, or a different phrase. Keep the same root coaching direction, just reshape how you deliver it.\n\n";
+}
+
+function buildAnthropicPayload(prompt, coachingStyle, profile, recentShots, rephrase) {
   const prefix = buildProfileSystemPrefix(profile);
   const base = buildSystemPrompt(coachingStyle);
   const recent = buildRecentShotsBlock(recentShots);
+  const rephrasePrefix = buildRephrasePrefix(rephrase);
   return {
-    system: prefix + base + recent,
+    system: prefix + rephrasePrefix + base + recent,
     model: ANTHROPIC_MODEL,
     max_tokens: 512,
     messages: [{ role: "user", content: prompt }],
@@ -136,7 +144,12 @@ function buildAnthropicPayload(prompt, coachingStyle, profile, recentShots) {
 app.use(express.json());
 
 app.post("/api/ask", async (req, res) => {
-  const { prompt, coachingStyle, profile, recentShots } = req.body ?? {};
+  const { prompt, message, coachingStyle, profile, recentShots, rephrase } = req.body ?? {};
+  const resolvedPrompt = typeof prompt === "string" && prompt.trim()
+    ? prompt
+    : typeof message === "string" && message.trim()
+      ? message
+      : "";
   const resolvedCoachingStyle =
     profile &&
     typeof profile.coaching_style === "string" &&
@@ -147,10 +160,10 @@ app.post("/api/ask", async (req, res) => {
         : DEFAULT_COACHING_STYLE;
   const requestStartedAt = new Date().toISOString();
   const promptPreview =
-    typeof prompt === "string" ? `${prompt.slice(0, 120)}${prompt.length > 120 ? "..." : ""}` : "";
+    typeof resolvedPrompt === "string" ? `${resolvedPrompt.slice(0, 120)}${resolvedPrompt.length > 120 ? "..." : ""}` : "";
 
-  if (!prompt || typeof prompt !== "string") {
-    return res.status(400).json({ error: "Missing required string field: prompt" });
+  if (!resolvedPrompt || typeof resolvedPrompt !== "string") {
+    return res.status(400).json({ error: "Missing required string field: prompt or message" });
   }
 
   if (!ANTHROPIC_API_KEY) {
@@ -165,10 +178,11 @@ app.post("/api/ask", async (req, res) => {
       `[${requestStartedAt}] /api/ask -> Anthropic model=${ANTHROPIC_MODEL} style="${resolvedCoachingStyle}" prompt="${promptPreview}"`,
     );
     const anthropicPayload = buildAnthropicPayload(
-      prompt,
+      resolvedPrompt,
       resolvedCoachingStyle,
       profile,
       recentShots,
+      Boolean(rephrase),
     );
     if (!anthropicPayload.system) {
       throw new Error("System prompt is empty and cannot be sent to Anthropic.");

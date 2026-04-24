@@ -101,6 +101,10 @@ export function CoachExperience({ profile, userId, onSignOut }) {
   const [shotThread, setShotThread] = useState([]);
   const [activeTab, setActiveTab] = useState("coach");
   const [currentSession, setCurrentSession] = useState(null);
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [typedMessage, setTypedMessage] = useState("");
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const [lastShotId, setLastShotId] = useState(null);
 
   const currentSessionRef = useRef(null);
   useEffect(() => {
@@ -341,7 +345,7 @@ export function CoachExperience({ profile, userId, onSignOut }) {
   const persistShotAfterResponse = useCallback(
     async (messageText, whisperResponse) => {
       if (!userId) {
-        return;
+        return null;
       }
       try {
         let sessionRow = currentSessionRef.current;
@@ -363,12 +367,16 @@ export function CoachExperience({ profile, userId, onSignOut }) {
           setCurrentSession(sessionRow);
         }
 
-        const { error: shotErr } = await supabase.from("shots").insert({
-          user_id: userId,
-          session_id: sessionRow.id,
-          transcript: messageText,
-          whisper_response: whisperResponse,
-        });
+        const { data: shotRow, error: shotErr } = await supabase
+          .from("shots")
+          .insert({
+            user_id: userId,
+            session_id: sessionRow.id,
+            transcript: messageText,
+            whisper_response: whisperResponse,
+          })
+          .select("id")
+          .single();
         if (shotErr) {
           throw shotErr;
         }
@@ -385,8 +393,10 @@ export function CoachExperience({ profile, userId, onSignOut }) {
         const updated = { ...sessionRow, shot_count: nextCount };
         currentSessionRef.current = updated;
         setCurrentSession(updated);
+        return shotRow?.id ?? null;
       } catch (err) {
         console.error("persistShotAfterResponse:", err);
+        return null;
       }
     },
     [userId],
@@ -437,7 +447,8 @@ export function CoachExperience({ profile, userId, onSignOut }) {
     }
   }, []);
 
-  const sendToClaude = async (messageText) => {
+  const sendToClaude = async (messageText, options = {}) => {
+    const { rephrase = false } = options;
     setIsLoading(true);
     setError("");
     setResponse("");
@@ -464,9 +475,11 @@ export function CoachExperience({ profile, userId, onSignOut }) {
         },
         body: JSON.stringify({
           prompt,
+          message: messageText,
           coachingStyle,
           profile: apiProfile,
           recentShots,
+          rephrase,
         }),
       });
 
@@ -484,13 +497,57 @@ export function CoachExperience({ profile, userId, onSignOut }) {
       const data = await res.json();
       const nextResponse = data.response || "No response text received.";
       setResponse(nextResponse);
-      setShotThread((prev) => [
-        ...prev,
-        { role: "user", text: messageText },
-        { role: "assistant", text: nextResponse },
-      ]);
+      if (rephrase) {
+        setShotThread((prev) => {
+          if (!prev.length) {
+            return prev;
+          }
+          const next = [...prev];
+          const last = next[next.length - 1];
+          if (last?.role === "assistant") {
+            next[next.length - 1] = { role: "assistant", text: nextResponse };
+            return next;
+          }
+          return [...next, { role: "assistant", text: nextResponse }];
+        });
+      } else {
+        setShotThread((prev) => [
+          ...prev,
+          { role: "user", text: messageText },
+          { role: "assistant", text: nextResponse },
+        ]);
+      }
       setIsReplyMode(true);
-      await persistShotAfterResponse(messageText, nextResponse);
+      if (rephrase) {
+        let targetShotId = lastShotId;
+        if (!targetShotId && userId) {
+          const sid = currentSessionRef.current?.id ?? null;
+          let query = supabase
+            .from("shots")
+            .select("id")
+            .eq("user_id", userId)
+            .order("created_at", { ascending: false })
+            .limit(1);
+          if (sid) {
+            query = query.eq("session_id", sid);
+          }
+          const { data: fallbackShot } = await query.maybeSingle();
+          targetShotId = fallbackShot?.id ?? null;
+        }
+        if (targetShotId) {
+          await supabase
+            .from("shots")
+            .update({ whisper_response: nextResponse })
+            .eq("id", targetShotId)
+            .eq("user_id", userId);
+          setLastShotId(targetShotId);
+        }
+      } else {
+        const createdShotId = await persistShotAfterResponse(messageText, nextResponse);
+        if (createdShotId) {
+          setLastShotId(createdShotId);
+        }
+      }
     } catch (err) {
       setError(err.message || "Failed to call backend API.");
     } finally {
@@ -687,6 +744,97 @@ export function CoachExperience({ profile, userId, onSignOut }) {
     setError("");
   };
 
+  const handleTypedSubmit = async (event) => {
+    event.preventDefault();
+    const text = typedMessage.trim();
+    if (!text || isLoading) {
+      return;
+    }
+    setTranscript(text);
+    transcriptRef.current = text;
+    setShowTextInput(false);
+    setTypedMessage("");
+    stopSpeaking();
+    await sendToClaude(text);
+  };
+
+  const handleAnotherCue = async () => {
+    if (!transcriptRef.current || isLoading) {
+      return;
+    }
+    stopSpeaking();
+    await sendToClaude(transcriptRef.current, { rephrase: true });
+  };
+
+  const handleDeleteShotConfirm = async () => {
+    if (!userId) {
+      setIsDeleteConfirmOpen(false);
+      return;
+    }
+
+    try {
+      const sid = currentSessionRef.current?.id ?? null;
+      let shotQuery = supabase
+        .from("shots")
+        .select("id")
+        .eq("user_id", userId)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (sid) {
+        shotQuery = shotQuery.eq("session_id", sid);
+      }
+
+      const { data: latestShot, error: lookupErr } = await shotQuery.maybeSingle();
+      if (lookupErr) {
+        throw lookupErr;
+      }
+      if (!latestShot?.id) {
+        setIsDeleteConfirmOpen(false);
+        return;
+      }
+
+      const { error: deleteErr } = await supabase
+        .from("shots")
+        .delete()
+        .eq("id", latestShot.id)
+        .eq("user_id", userId);
+      if (deleteErr) {
+        throw deleteErr;
+      }
+
+      const sessionRow = currentSessionRef.current;
+      if (sessionRow?.id) {
+        const nextCount = Math.max(0, (sessionRow.shot_count ?? 0) - 1);
+        const { error: upErr } = await supabase
+          .from("sessions")
+          .update({ shot_count: nextCount })
+          .eq("id", sessionRow.id)
+          .eq("user_id", userId);
+        if (upErr) {
+          throw upErr;
+        }
+        const updated = { ...sessionRow, shot_count: nextCount };
+        currentSessionRef.current = updated;
+        setCurrentSession(updated);
+      }
+
+      setLastShotId(null);
+      setIsDeleteConfirmOpen(false);
+      setTranscript("");
+      transcriptRef.current = "";
+      setResponse("");
+      setError("");
+      setIsReplyMode(false);
+      setShotThread([]);
+      stopSpeaking();
+      setWaitingPhrase((current) => pickNextPhrase(current));
+    } catch (err) {
+      setError(err.message || "Could not delete this shot.");
+      setIsDeleteConfirmOpen(false);
+    }
+  };
+
   const handleNextShot = () => {
     stopSpeaking();
     shouldTranscribeRef.current = false;
@@ -702,6 +850,7 @@ export function CoachExperience({ profile, userId, onSignOut }) {
     setError("");
     setIsReplyMode(false);
     setShotThread([]);
+    setLastShotId(null);
     setWaitingPhrase((current) => pickNextPhrase(current));
   };
 
@@ -727,9 +876,28 @@ export function CoachExperience({ profile, userId, onSignOut }) {
           error={error}
           showActionBar={showPostResponseActions}
           isSpeaking={isSpeaking}
+          showTextInput={showTextInput}
+          typedMessage={typedMessage}
+          onTypedMessageChange={setTypedMessage}
+          onOpenTextInput={() => {
+            if (isListening) {
+              stopListening();
+            }
+            setShowTextInput(true);
+          }}
+          onCancelTextInput={() => {
+            setShowTextInput(false);
+            setTypedMessage("");
+          }}
+          onSubmitTypedMessage={handleTypedSubmit}
+          isDeleteConfirmOpen={isDeleteConfirmOpen}
+          onRequestDeleteShot={() => setIsDeleteConfirmOpen(true)}
+          onCancelDeleteShot={() => setIsDeleteConfirmOpen(false)}
+          onConfirmDeleteShot={handleDeleteShotConfirm}
           onVoiceButtonClick={toggleListening}
           onVoiceKeyDown={handleKeyDown}
           onReply={handleReply}
+          onAnotherCue={handleAnotherCue}
           onNextShot={handleNextShot}
           onStopSpeaking={stopSpeaking}
           onSignOut={onSignOut}

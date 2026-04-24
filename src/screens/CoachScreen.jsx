@@ -20,9 +20,20 @@ export function CoachScreen({
   error,
   showActionBar,
   isSpeaking,
+  showTextInput,
+  typedMessage,
+  onTypedMessageChange,
+  onOpenTextInput,
+  onCancelTextInput,
+  onSubmitTypedMessage,
+  isDeleteConfirmOpen,
+  onRequestDeleteShot,
+  onCancelDeleteShot,
+  onConfirmDeleteShot,
   onVoiceButtonClick,
   onVoiceKeyDown,
   onReply,
+  onAnotherCue,
   onNextShot,
   onStopSpeaking,
   onSignOut,
@@ -126,7 +137,48 @@ export function CoachScreen({
               <span className="dw-voice-btn-label">{buttonLabel}</span>
             ) : null}
           </button>
+          <button
+            type="button"
+            className="dw-text-fallback-btn"
+            onClick={onOpenTextInput}
+            aria-label="Type shot instead"
+          >
+            <svg viewBox="0 0 24 24" className="dw-text-fallback-icon" aria-hidden>
+              <path
+                d="M4 20h4l10-10a2.12 2.12 0 0 0-3-3L5 17v3zM13.5 6.5l3 3"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
         </div>
+
+        {showTextInput ? (
+          <form className="dw-text-fallback-panel" onSubmit={onSubmitTypedMessage}>
+            <textarea
+              className="dw-text-fallback-input"
+              rows={3}
+              placeholder="Type your shot..."
+              value={typedMessage}
+              onChange={(event) => onTypedMessageChange(event.target.value)}
+            />
+            <div className="dw-text-fallback-actions">
+              <button type="submit" className="dw-action-btn dw-action-btn--primary">
+                Send
+              </button>
+              <button
+                type="button"
+                className="dw-text-fallback-cancel"
+                onClick={onCancelTextInput}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
+        ) : null}
 
         {!recordingSupported && (
           <p className="dw-status dw-status--error">
@@ -150,6 +202,13 @@ export function CoachScreen({
                 Stop voice
               </button>
             )}
+            <button
+              type="button"
+              className="dw-delete-shot-link"
+              onClick={onRequestDeleteShot}
+            >
+              Delete this shot
+            </button>
           </section>
         )}
       </div>
@@ -166,6 +225,13 @@ export function CoachScreen({
             </button>
             <button
               type="button"
+              className="dw-action-btn dw-action-btn--secondary"
+              onClick={onAnotherCue}
+            >
+              Another Cue
+            </button>
+            <button
+              type="button"
               className="dw-action-btn dw-action-btn--primary"
               onClick={onNextShot}
             >
@@ -174,6 +240,30 @@ export function CoachScreen({
           </div>
         </div>
       )}
+
+      {isDeleteConfirmOpen ? (
+        <div className="dw-modal-overlay" role="presentation">
+          <div className="dw-modal-card" role="dialog" aria-modal="true">
+            <p className="dw-modal-title">Delete this shot? This can&apos;t be undone.</p>
+            <div className="dw-modal-actions">
+              <button
+                type="button"
+                className="dw-action-btn dw-action-btn--secondary"
+                onClick={onCancelDeleteShot}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="dw-action-btn dw-action-btn--primary"
+                onClick={onConfirmDeleteShot}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
